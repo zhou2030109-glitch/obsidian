@@ -1,0 +1,4 @@
+.pin-folder-top-pinned > .nav-folder-title {
+  background: var(--background-primary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}

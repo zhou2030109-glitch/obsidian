@@ -1,0 +1,9 @@
+{
+  "id": "pin-folder-top",
+  "name": "Pin Folder Top",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Keep selected folder branches at the top of the Obsidian file explorer.",
+  "author": "zhou2030109-glitch",
+  "isDesktopOnly": false
+}

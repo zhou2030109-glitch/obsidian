@@ -1,0 +1,22 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Dependencies/build output for future plugins
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Obsidian local runtime/settings
+data.json
+.obsidian/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
