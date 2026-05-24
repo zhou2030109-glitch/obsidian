@@ -1,17 +1,24 @@
 // ==UserScript==
-// @name         ChatGPT → Obsidian 一键剪藏
-// @namespace    chatgpt-to-obsidian
-// @version      0.8.2
-// @description  ChatGPT 工具栏 + 划词一键存入 Obsidian，支持表格/公式/代码块
+// @name         AI Chat → Obsidian 一键剪藏
+// @namespace    ai-chat-to-obsidian
+// @version      0.9.0
+// @description  ChatGPT / Gemini 划词或单击工具栏按钮，存入 Obsidian；支持 AI 润色 + 表格/公式/代码块
 // @author       you
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
+// @match        https://gemini.google.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
 // @connect      127.0.0.1
 // @connect      localhost
+// @connect      api.deepseek.com
+// @connect      api.openai.com
+// @connect      api.moonshot.cn
+// @connect      api.siliconflow.cn
+// @connect      openrouter.ai
+// @connect      api.together.xyz
 // @require      https://unpkg.com/turndown@7.2.0/dist/turndown.js
 // @require      https://unpkg.com/@joplin/turndown-plugin-gfm@1.0.61/dist/turndown-plugin-gfm.js
 // @run-at       document-idle
@@ -21,12 +28,45 @@
 (function () {
     'use strict';
 
+    const SITE = (() => {
+        const h = location.hostname;
+        if (h.includes('gemini.google.com')) {
+            return {
+                name: 'gemini',
+                label: 'Gemini',
+                userSel: 'user-query, .user-query-bubble-with-background, [class*="user-query-container"]',
+                asstSel: 'model-response, .model-response-text, [class*="model-response"]',
+            };
+        }
+        return {
+            name: 'chatgpt',
+            label: 'ChatGPT',
+            userSel: '[data-message-author-role="user"]',
+            asstSel: '[data-message-author-role="assistant"]',
+        };
+    })();
+
     const CONFIG = {
         OBSIDIAN_HOST: 'http://127.0.0.1:27123',
         API_KEY: 'YOUR_OBSIDIAN_API_KEY_HERE',
-        DEFAULT_FOLDER: 'AI对话/ChatGPT',
-        DEFAULT_USER_SELECTOR: '[data-message-author-role="user"]',
-        DEFAULT_ASSISTANT_SELECTOR: '[data-message-author-role="assistant"]',
+        DEFAULT_FOLDER: 'AI对话/' + SITE.label,
+        DEFAULT_USER_SELECTOR: SITE.userSel,
+        DEFAULT_ASSISTANT_SELECTOR: SITE.asstSel,
+        POLISH: {
+            ENDPOINT: 'https://api.deepseek.com/v1/chat/completions',
+            API_KEY: '',
+            MODEL: 'deepseek-chat',
+            TEMPERATURE: 0.3,
+            SYSTEM_PROMPT: `你是一个 Markdown 排版与内容整理专家。把用户给你的（从 AI 对话页面剪藏出来的）内容整理成一篇结构清晰、可直接放入 Obsidian 的 Markdown 笔记，要求：
+- 根据内容合理拆分二级 / 三级标题，让结构一目了然
+- 关键要点用列表呈现
+- 完整保留代码块、表格、数学公式（$...$ 或 $$...$$）原样
+- 删除冗余客套话（"好的"、"以下是..."、"希望对你有帮助" 等）
+- 删除重复内容
+- 保持原始语言（中文→中文，英文→英文）
+- 不要添加 frontmatter，不要用 \`\`\`markdown 包裹整体
+- 直接输出整理后的 Markdown 正文，不要任何前言或解释`,
+        },
     };
 
     const turndown = new TurndownService({
@@ -118,7 +158,7 @@
         },
     });
 
-    let learnedSelectors = GM_getValue('learned_selectors', null);
+    let learnedSelectors = GM_getValue('learned_selectors_' + SITE.name, null);
     let recentFolders = GM_getValue('recent_folders', []);
 
     const getUserSel = () => (learnedSelectors && learnedSelectors.user) || CONFIG.DEFAULT_USER_SELECTOR;
@@ -268,8 +308,13 @@
         .o2o-crumb-seg:hover { background: rgba(255,255,255,0.08); color: #fff; }
         .o2o-crumb-seg.current { color: #fff; font-weight: 500; }
         .o2o-crumb-sep { color: rgba(255,255,255,0.3); padding: 0 1px; }
-        .o2o-picker-save {
+
+        .o2o-picker-actions {
+            display: flex; gap: 8px;
             margin: 4px 12px 8px;
+        }
+        .o2o-picker-save {
+            flex: 1;
             padding: 9px 12px;
             background: rgba(255,255,255,0.1);
             border: 1px solid rgba(255,255,255,0.12);
@@ -280,9 +325,31 @@
             display: flex; align-items: center; justify-content: center; gap: 8px;
             font-family: inherit;
             transition: background .15s, border-color .15s;
+            min-width: 0;
         }
         .o2o-picker-save:hover { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.2); }
-        .o2o-picker-save b { font-weight: 600; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .o2o-picker-save b { font-weight: 600; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .o2o-polish-toggle {
+            padding: 0 12px;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 6px;
+            color: rgba(255,255,255,0.65);
+            font-size: 12px;
+            cursor: pointer;
+            font-family: inherit;
+            white-space: nowrap;
+            display: flex; align-items: center; gap: 4px;
+            transition: all .15s;
+        }
+        .o2o-polish-toggle:hover { background: rgba(255,255,255,0.12); color: #fff; }
+        .o2o-polish-toggle.on {
+            background: rgba(180,150,255,0.25);
+            border-color: rgba(180,150,255,0.5);
+            color: #fff;
+        }
+        .o2o-polish-toggle.on:hover { background: rgba(180,150,255,0.35); }
+
         .o2o-picker-foot {
             padding: 8px 12px;
             border-top: 1px solid rgba(255,255,255,0.05);
@@ -313,6 +380,10 @@
         .o2o-toast.error {
             background: rgba(80,30,30,0.85);
             border-color: rgba(255,100,100,0.2);
+        }
+        .o2o-toast.info {
+            background: rgba(40,50,80,0.85);
+            border-color: rgba(180,200,255,0.2);
         }
 
         .o2o-learn-cursor, .o2o-learn-cursor * { cursor: crosshair !important; }
@@ -374,9 +445,59 @@
         return folder + filename;
     }
 
+    function polishWithAI(md) {
+        return new Promise((resolve, reject) => {
+            if (!CONFIG.POLISH.API_KEY) {
+                reject(new Error('未配置 POLISH.API_KEY，请在脚本顶部填入'));
+                return;
+            }
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: CONFIG.POLISH.ENDPOINT,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + CONFIG.POLISH.API_KEY,
+                },
+                data: JSON.stringify({
+                    model: CONFIG.POLISH.MODEL,
+                    temperature: CONFIG.POLISH.TEMPERATURE,
+                    messages: [
+                        { role: 'system', content: CONFIG.POLISH.SYSTEM_PROMPT },
+                        { role: 'user', content: md },
+                    ],
+                }),
+                timeout: 120000,
+                onload: (res) => {
+                    if (res.status >= 200 && res.status < 300) {
+                        try {
+                            const json = JSON.parse(res.responseText);
+                            const content = json.choices?.[0]?.message?.content;
+                            if (content) resolve(content.trim());
+                            else reject(new Error('AI 响应缺少 content'));
+                        } catch (e) { reject(new Error('解析失败: ' + e.message)); }
+                    } else {
+                        reject(new Error(`HTTP ${res.status}: ${(res.responseText || '').slice(0, 200)}`));
+                    }
+                },
+                onerror: () => reject(new Error('AI 网络错误')),
+                ontimeout: () => reject(new Error('AI 超时（响应慢，换模型或减小内容）')),
+            });
+        });
+    }
+
     function getRole(el) {
-        const r = el.getAttribute && el.getAttribute('data-message-author-role');
-        if (r) return r;
+        if (SITE.name === 'chatgpt') {
+            const r = el.getAttribute && el.getAttribute('data-message-author-role');
+            if (r) return r;
+        }
+        if (SITE.name === 'gemini') {
+            const tag = (el.tagName || '').toLowerCase();
+            if (tag === 'user-query' || tag.includes('user-query')) return 'user';
+            if (tag === 'model-response' || tag.includes('model-response')) return 'assistant';
+            const cls = (el.className || '').toString();
+            if (/user-query/i.test(cls)) return 'user';
+            if (/model-response/i.test(cls)) return 'assistant';
+        }
         if (el.matches && el.matches(getUserSel())) return 'user';
         if (el.matches && el.matches(getAsstSel())) return 'assistant';
         return 'unknown';
@@ -418,13 +539,19 @@
     }
 
     function extractMessageMd(el) {
-        const contentEl = el.querySelector('.markdown') ||
-                          el.querySelector('[data-message-text]') ||
-                          el.querySelector('.whitespace-pre-wrap') || el;
+        let contentEl;
+        if (SITE.name === 'gemini') {
+            contentEl = el.querySelector('.markdown, message-content, .model-response-text, .query-text') ||
+                        el.querySelector('[class*="response-content"], [class*="message-content"]') || el;
+        } else {
+            contentEl = el.querySelector('.markdown') ||
+                        el.querySelector('[data-message-text]') ||
+                        el.querySelector('.whitespace-pre-wrap') || el;
+        }
         return htmlToMd(contentEl);
     }
 
-    function buildNote({ md, role, sourceLabel }) {
+    function buildNote({ md, role, sourceLabel, polished }) {
         const now = new Date();
         const iso = now.toISOString();
         const date = iso.slice(0, 10);
@@ -432,19 +559,20 @@
         const firstLine = md.split('\n').find(l => l.trim().length > 0) || 'untitled';
         const title = firstLine.replace(/[#*`>\-\[\]()|]/g, '').slice(0, 24)
             .replace(/[\\/:*?"<>|]/g, '').trim() || 'untitled';
-        const filename = `ChatGPT-${date}-${time}-${title}.md`;
-        const frontmatter = [
+        const filename = `${SITE.label}-${date}-${time}-${title}.md`;
+        const lines = [
             '---',
-            'source: chatgpt',
+            'source: ' + SITE.name,
             'role: ' + role,
             'kind: ' + sourceLabel,
+            polished ? 'polished: true' : null,
             'date: ' + iso,
             'url: ' + location.href,
-            'tags: [chatgpt]',
+            'tags: [' + SITE.name + ']',
             '---',
             '',
-        ].join('\n');
-        return { filename, content: frontmatter + md + '\n' };
+        ].filter(Boolean);
+        return { filename, content: lines.join('\n') + md + '\n' };
     }
 
     let currentPicker = null;
@@ -479,7 +607,10 @@
                 <input class="o2o-picker-input" placeholder="搜索全部 / 输入新名称…" />
             </div>
             <div class="o2o-picker-crumb"></div>
-            <button class="o2o-picker-save"></button>
+            <div class="o2o-picker-actions">
+                <button class="o2o-picker-save"></button>
+                <button class="o2o-polish-toggle" title="开启后，保存前先调 AI 润色排版"></button>
+            </div>
             <div class="o2o-picker-list"></div>
             <div class="o2o-picker-foot">
                 <span><kbd>↑↓</kbd> 选</span>
@@ -494,12 +625,26 @@
         const input = box.querySelector('.o2o-picker-input');
         const crumbEl = box.querySelector('.o2o-picker-crumb');
         const saveBtn = box.querySelector('.o2o-picker-save');
+        const polishBtn = box.querySelector('.o2o-polish-toggle');
         const list = box.querySelector('.o2o-picker-list');
 
         let currentPath = '';
         let filtered = [];
         let idx = 0;
         let searchMode = false;
+        let polishOn = GM_getValue('polish_on', false);
+
+        function syncPolishUI() {
+            polishBtn.classList.toggle('on', polishOn);
+            polishBtn.innerHTML = polishOn ? '✨ 润色 <b style="margin-left:2px">ON</b>' : '✨ 润色';
+        }
+        syncPolishUI();
+        polishBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            polishOn = !polishOn;
+            syncPolishUI();
+            GM_setValue('polish_on', polishOn);
+        });
 
         function getChildren(path) {
             const prefix = path ? path + '/' : '';
@@ -583,7 +728,7 @@
                 if (i === idx) el.scrollIntoView({ block: 'nearest' });
             });
         }
-        function commit(f) { closePicker(); onPick(f); }
+        function commit(f) { closePicker(); onPick(f, polishOn); }
 
         function enterItem(item) {
             if (!item) return;
@@ -669,11 +814,13 @@
 
     function toast(msg, type) {
         const t = document.createElement('div');
-        t.className = 'o2o-toast' + (type === 'error' ? ' error' : '');
+        t.className = 'o2o-toast' + (type ? ' ' + type : '');
         t.textContent = msg;
         document.body.appendChild(t);
         requestAnimationFrame(() => t.classList.add('show'));
-        setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, 2800);
+        const hideAfter = type === 'info' ? 60000 : 2800;
+        const timer = setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, hideAfter);
+        return () => { clearTimeout(timer); t.classList.remove('show'); setTimeout(() => t.remove(), 250); };
     }
 
     async function clip({ md, role, sourceLabel, useDefault }) {
@@ -683,17 +830,29 @@
         catch (e) { toast('连不上 Obsidian：' + e.message, 'error'); return; }
         if (!folders.includes(CONFIG.DEFAULT_FOLDER)) folders.push(CONFIG.DEFAULT_FOLDER);
 
-        const doWrite = async (folder) => {
-            const { filename, content } = buildNote({ md, role, sourceLabel });
+        const doWrite = async (folder, polishOn) => {
+            let finalMd = md;
+            if (polishOn) {
+                const hideLoading = toast('AI 润色中…（最长 2 分钟）', 'info');
+                try {
+                    finalMd = await polishWithAI(md);
+                    hideLoading();
+                } catch (e) {
+                    hideLoading();
+                    toast('润色失败：' + e.message, 'error');
+                    return;
+                }
+            }
+            const { filename, content } = buildNote({ md: finalMd, role, sourceLabel, polished: polishOn });
             try {
                 const path = await writeNote(folder, filename, content);
                 pushRecent(folder);
-                toast('✓ ' + path);
+                toast('✓ ' + path + (polishOn ? '  (已润色)' : ''));
             } catch (e) {
                 toast('写入失败：' + e.message, 'error');
             }
         };
-        if (useDefault) await doWrite(recentFolders[0] || CONFIG.DEFAULT_FOLDER);
+        if (useDefault) await doWrite(recentFolders[0] || CONFIG.DEFAULT_FOLDER, false);
         else showPicker({ folders, onPick: doWrite });
     }
 
@@ -753,7 +912,7 @@
 
     function findToolbar(msgEl) {
         let btn = msgEl.querySelector(
-            '[data-testid*="copy" i], button[aria-label*="复制"], button[aria-label*="Copy" i]'
+            '[data-testid*="copy" i], button[aria-label*="复制"], button[aria-label*="Copy" i], button[mattooltip*="复制"], button[mattooltip*="Copy" i]'
         );
         if (btn) return btn.parentElement;
 
@@ -767,7 +926,7 @@
                 (c.tagName === 'SPAN' && c.querySelector(':scope > button'))
             );
             if (childBtns.length < 2) continue;
-            const withSvg = childBtns.filter(b => b.querySelector('svg'));
+            const withSvg = childBtns.filter(b => b.querySelector('svg, mat-icon'));
             if (withSvg.length >= 2) return d;
         }
         return null;
@@ -829,7 +988,7 @@
     function injectMenuItem(menu, msgEl) {
         if (!menu || !msgEl) return;
         if (menu.dataset.o2oInjected) return;
-        const existing = menu.querySelectorAll('[role="menuitem"]').length;
+        const existing = menu.querySelectorAll('[role="menuitem"], button[mat-menu-item]').length;
         if (existing === 0) return;
         menu.dataset.o2oInjected = '1';
         const item = document.createElement('div');
@@ -846,14 +1005,14 @@
         menu.appendChild(item);
     }
 
-    const MENU_SEL = '[role="menu"], [data-radix-menu-content], [data-headlessui-state]';
+    const MENU_SEL = '[role="menu"], [data-radix-menu-content], [data-headlessui-state], .mat-mdc-menu-content, .mat-menu-content';
     new MutationObserver((mutations) => {
         for (const m of mutations) {
             for (const n of m.addedNodes) {
                 if (n.nodeType !== 1) continue;
                 if (n.matches?.(MENU_SEL)) injectMenuItem(n, activeMsg);
                 n.querySelectorAll?.(MENU_SEL).forEach(menu => injectMenuItem(menu, activeMsg));
-                n.querySelectorAll?.('[role="menuitem"]').forEach(mi => {
+                n.querySelectorAll?.('[role="menuitem"], button[mat-menu-item]').forEach(mi => {
                     const parent = mi.parentElement;
                     if (parent && !parent.dataset.o2oInjected) {
                         injectMenuItem(parent, activeMsg);
@@ -932,9 +1091,9 @@
         } else {
             learnBuf.assistant = s;
             learnedSelectors = learnBuf;
-            GM_setValue('learned_selectors', learnedSelectors);
+            GM_setValue('learned_selectors_' + SITE.name, learnedSelectors);
             stopLearn();
-            toast('选择器已更新');
+            toast('选择器已更新 (' + SITE.label + ')');
             document.querySelectorAll('.o2o-tb-btn').forEach(b => b.remove());
             mountButtons();
         }

@@ -12,7 +12,7 @@
 
 | 脚本 | 说明 |
 | --- | --- |
-| [ChatGPT → Obsidian](chatgpt-to-obsidian) | 在 ChatGPT 网页端划词或单击工具栏按钮，一键把对话存进 Obsidian vault（支持表格 / 公式 / 代码块）。 |
+| [AI Chat → Obsidian](chatgpt-to-obsidian) | 在 ChatGPT / Gemini 网页端划词或单击工具栏按钮，一键把对话存进 Obsidian vault；可选 AI 润色排版（DeepSeek / OpenAI 兼容）；支持表格、公式、代码块。 |
 
 ## 目录约定
 
