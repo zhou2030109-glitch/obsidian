@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Chat → Obsidian 一键剪藏
 // @namespace    ai-chat-to-obsidian
-// @version      0.9.0
+// @version      0.9.6
 // @description  ChatGPT / Gemini 划词或单击工具栏按钮，存入 Obsidian；支持 AI 润色 + 表格/公式/代码块
 // @author       you
 // @match        https://chatgpt.com/*
@@ -19,14 +19,46 @@
 // @connect      api.siliconflow.cn
 // @connect      openrouter.ai
 // @connect      api.together.xyz
-// @require      https://unpkg.com/turndown@7.2.0/dist/turndown.js
-// @require      https://unpkg.com/@joplin/turndown-plugin-gfm@1.0.61/dist/turndown-plugin-gfm.js
+// @require      https://cdn.jsdelivr.net/npm/turndown@7.2.0/dist/turndown.js
+// @require      https://cdn.jsdelivr.net/npm/@joplin/turndown-plugin-gfm@1.0.61/dist/turndown-plugin-gfm.js
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==
 
 (function () {
     'use strict';
+
+    (function setupTrustedTypes() {
+        if (!window.trustedTypes || !window.trustedTypes.createPolicy) return;
+        try {
+            window.trustedTypes.createPolicy('default', {
+                createHTML: s => s,
+                createScript: s => s,
+                createScriptURL: s => s,
+            });
+            return;
+        } catch (e) {}
+        let pol;
+        try {
+            pol = window.trustedTypes.createPolicy('o2o-' + Date.now(), { createHTML: s => s });
+        } catch (e) { return; }
+        const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+        if (!desc || !desc.set) return;
+        const origSet = desc.set;
+        try {
+            Object.defineProperty(Element.prototype, 'innerHTML', {
+                configurable: true,
+                enumerable: desc.enumerable,
+                get: desc.get,
+                set: function(val) {
+                    if (typeof val === 'string') {
+                        try { return origSet.call(this, pol.createHTML(val)); } catch (e) {}
+                    }
+                    return origSet.call(this, val);
+                },
+            });
+        } catch (e) {}
+    })();
 
     const SITE = (() => {
         const h = location.hostname;
@@ -57,15 +89,42 @@
             API_KEY: '',
             MODEL: 'deepseek-chat',
             TEMPERATURE: 0.3,
-            SYSTEM_PROMPT: `你是一个 Markdown 排版与内容整理专家。把用户给你的（从 AI 对话页面剪藏出来的）内容整理成一篇结构清晰、可直接放入 Obsidian 的 Markdown 笔记，要求：
-- 根据内容合理拆分二级 / 三级标题，让结构一目了然
-- 关键要点用列表呈现
-- 完整保留代码块、表格、数学公式（$...$ 或 $$...$$）原样
-- 删除冗余客套话（"好的"、"以下是..."、"希望对你有帮助" 等）
+            SYSTEM_PROMPT: `你是 Markdown 排版专家。输入是从 AI 对话页面剪藏的内容（往往已经丢失了标题/加粗的标记，只是纯文本段落）。把它整理成一篇结构清晰、视觉漂亮、可直接放进 Obsidian 的 Markdown 笔记。
+
+【硬性要求 - 必须用真正的 Markdown 语法】
+1. 每个主题段落都要起一个 \`## 二级标题\`（优先用 ##，必须带 # 号；只有子主题才用 ### 三级标题，不要全篇都用 ###）
+2. 关键术语 / 算法名 / 模型名 / 重要结论 用 \`**加粗**\`
+3. 列举内容用 \`-\` 列表或 \`1.\` 编号列表
+4. 重要洞察或核心结论可以用 \`> 引用块\` 突出
+5. 行内代码用反引号包裹，代码段用三个反引号 + 语言名
+6. 数学公式保留 \`$...$\` 行内 / \`$$...$$\` 块级
+7. 表格保持 \`| 列1 | 列2 |\` 格式
+
+【内容处理】
+- 根据内容主线合理拆分多个 \`##\` 段落（一般 2-5 个二级标题）
+- 删除"好的"、"以下是..."、"希望对你有帮助"等客套话
 - 删除重复内容
+- 保留所有事实、数字、人名、引用
 - 保持原始语言（中文→中文，英文→英文）
-- 不要添加 frontmatter，不要用 \`\`\`markdown 包裹整体
-- 直接输出整理后的 Markdown 正文，不要任何前言或解释`,
+
+【输出格式】
+- 不要 frontmatter
+- 不要用 \`\`\`markdown 包裹整体
+- 开头直接进正文，不要"以下是整理后的内容"这种前言
+- 第一行就是 \`## 第一个主题\`
+
+【示例】
+输入：
+"REDIFFUSE 算法 为了解决这个问题，作者提出了 REDIFFUSE 算法。它的核心思想是利用 Variation API。论文实验结果显示，REDIFFUSE 在 DALL-E 2 上准确率超过 90%。"
+
+输出：
+## REDIFFUSE 算法
+
+为了解决这个问题，作者提出了 **REDIFFUSE** 算法。它的核心思想是利用 **Variation API**。
+
+## 实验结果
+
+论文实验数据显示，**REDIFFUSE** 在 **DALL-E 2** 上准确率超过 **90%**。`,
         },
     };
 
@@ -170,6 +229,17 @@
     }
 
     const ICON_SAVE = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+
+    function setHTML(el, html) {
+        try { el.innerHTML = html; return; } catch (e) {}
+        while (el.firstChild) el.removeChild(el.firstChild);
+        try {
+            const doc = new DOMParser().parseFromString(String(html), 'text/html');
+            while (doc.body.firstChild) el.appendChild(doc.body.firstChild);
+        } catch (e) {
+            el.textContent = String(html).replace(/<[^>]+>/g, '');
+        }
+    }
 
     GM_addStyle(`
         .o2o-tb-btn {
@@ -570,9 +640,8 @@
             'url: ' + location.href,
             'tags: [' + SITE.name + ']',
             '---',
-            '',
-        ].filter(Boolean);
-        return { filename, content: lines.join('\n') + md + '\n' };
+        ].filter(x => x !== null);
+        return { filename, content: lines.join('\n') + '\n\n' + md + '\n' };
     }
 
     let currentPicker = null;
@@ -602,7 +671,7 @@
         closePicker();
         const box = document.createElement('div');
         box.className = 'o2o-picker';
-        box.innerHTML = `
+        setHTML(box, `
             <div class="o2o-picker-head">
                 <input class="o2o-picker-input" placeholder="搜索全部 / 输入新名称…" />
             </div>
@@ -619,7 +688,7 @@
                 <span><kbd>←</kbd> 上层</span>
                 <span><kbd>esc</kbd> 关</span>
             </div>
-        `;
+        `);
         document.body.appendChild(box);
         currentPicker = box;
         const input = box.querySelector('.o2o-picker-input');
@@ -636,7 +705,7 @@
 
         function syncPolishUI() {
             polishBtn.classList.toggle('on', polishOn);
-            polishBtn.innerHTML = polishOn ? '✨ 润色 <b style="margin-left:2px">ON</b>' : '✨ 润色';
+            setHTML(polishBtn, polishOn ? '✨ 润色 <b style="margin-left:2px">ON</b>' : '✨ 润色');
         }
         syncPolishUI();
         polishBtn.addEventListener('click', (e) => {
@@ -673,11 +742,11 @@
                 parts.push(`<span class="o2o-crumb-sep">/</span>`);
                 parts.push(`<span class="o2o-crumb-seg ${i === segs.length - 1 ? 'current' : ''}" data-path="${esc(acc)}">${esc(s)}</span>`);
             });
-            crumbEl.innerHTML = parts.join('');
+            setHTML(crumbEl, parts.join(''));
         }
         function renderSaveBtn() {
             const target = currentPath || '(根目录)';
-            saveBtn.innerHTML = `<span>✓ 保存到</span><b>${esc(target)}</b>`;
+            setHTML(saveBtn, `<span>✓ 保存到</span><b>${esc(target)}</b>`);
         }
 
         function render() {
@@ -703,13 +772,13 @@
                 const typed = input.value.trim().replace(/^\/|\/$/g, '');
                 if (typed) {
                     const np = currentPath ? currentPath + '/' + typed : typed;
-                    list.innerHTML = `<div class="o2o-picker-empty">没找到 · 按 <kbd>Ctrl+↵</kbd> 保存到「${esc(np)}」</div>`;
+                    setHTML(list, `<div class="o2o-picker-empty">没找到 · 按 <kbd>Ctrl+↵</kbd> 保存到「${esc(np)}」</div>`);
                 } else {
-                    list.innerHTML = `<div class="o2o-picker-empty">这个文件夹下没有子目录<br>按 <kbd>Ctrl+↵</kbd> 直接保存到「${esc(currentPath || '根')}」</div>`;
+                    setHTML(list, `<div class="o2o-picker-empty">这个文件夹下没有子目录<br>按 <kbd>Ctrl+↵</kbd> 直接保存到「${esc(currentPath || '根')}」</div>`);
                 }
                 return;
             }
-            list.innerHTML = filtered.map((it, i) => {
+            setHTML(list, filtered.map((it, i) => {
                 const showName = it.search ? it.full : it.name;
                 const chev = (!it.search && it.hasChildren) ? '<span class="o2o-chev">›</span>' : '';
                 return `
@@ -720,7 +789,7 @@
                         ${chev}
                     </div>
                 `;
-            }).join('');
+            }).join(''));
         }
         function update() {
             list.querySelectorAll('.o2o-picker-item').forEach((el, i) => {
@@ -861,7 +930,7 @@
 
     function selectionToMd(html) {
         const wrap = document.createElement('div');
-        wrap.innerHTML = html;
+        setHTML(wrap, html);
         return turndown.turndown(cleanClone(wrap).innerHTML).trim();
     }
 
@@ -876,7 +945,7 @@
         const rect = range.getBoundingClientRect();
         const btn = document.createElement('button');
         btn.className = 'o2o-sel-btn';
-        btn.innerHTML = ICON_SAVE + '<span>存到 Obsidian</span>';
+        setHTML(btn, ICON_SAVE + '<span>存到 Obsidian</span>');
         btn.title = '单击 = 选文件夹 · Shift+单击 = 直接存到上次的文件夹';
         btn.style.top = (window.scrollY + rect.top - 38) + 'px';
         btn.style.left = (window.scrollX + Math.max(rect.right - 130, rect.left)) + 'px';
@@ -938,7 +1007,7 @@
         if (toolbar.querySelector(':scope > .o2o-tb-btn')) return true;
         const btn = document.createElement('button');
         btn.className = 'o2o-tb-btn';
-        btn.innerHTML = ICON_SAVE;
+        setHTML(btn, ICON_SAVE);
         btn.title = '存到 Obsidian · Shift+单击 = 直接存到上次文件夹';
         btn.setAttribute('aria-label', '存到 Obsidian');
         btn.addEventListener('mousedown', e => e.stopPropagation());
@@ -995,7 +1064,7 @@
         item.setAttribute('role', 'menuitem');
         item.setAttribute('tabindex', '-1');
         item.className = 'o2o-menu-item';
-        item.innerHTML = `${ICON_SAVE}<span>存到 Obsidian</span>`;
+        setHTML(item, `${ICON_SAVE}<span>存到 Obsidian</span>`);
         item.addEventListener('click', (e) => {
             e.preventDefault(); e.stopPropagation();
             const md = extractMessageMd(msgEl);
