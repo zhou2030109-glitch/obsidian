@@ -1,0 +1,10 @@
+{
+  "id": "file-shift-pin",
+  "name": "FileShift+Pin",
+  "version": "1.0.0",
+  "minAppVersion": "1.7.2",
+  "description": "Drag-and-drop reorder for File Explorer with a pin-to-top concept. Pinned folders sit at the top, are highlighted, AND can be reordered among themselves by dragging. Based on FileShift by Qctsu.",
+  "author": "zhou2030109-glitch",
+  "authorUrl": "https://github.com/zhou2030109-glitch",
+  "isDesktopOnly": false
+}

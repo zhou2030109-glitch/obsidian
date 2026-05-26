@@ -1,101 +1,106 @@
-const { Plugin, PluginSettingTab, Setting, normalizePath } = require("obsidian");
+const {
+  Notice,
+  Plugin,
+  PluginSettingTab,
+  Setting,
+  TFolder,
+  normalizePath,
+} = require("obsidian");
 
 const DEFAULT_SETTINGS = {
-  enabled: true,
-  pinnedPaths: ["仓库"],
-  refreshDelayMs: 120,
+  pinnedPaths: ["仓库", "知识库"],
 };
 
 module.exports = class PinFolderTopPlugin extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    this.applyTimer = null;
-    this.isApplying = false;
+    this.styleEl = document.createElement("style");
+    this.styleEl.id = "pin-folder-top-style";
+    document.head.appendChild(this.styleEl);
 
     this.addSettingTab(new PinFolderTopSettingTab(this.app, this));
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => this.addFolderMenu(menu, file))
+    );
     this.addCommand({
-      id: "apply-pinned-folders",
-      name: "立即刷新置顶分支",
-      callback: () => this.scheduleApply(true),
+      id: "pin-folder-top-refresh-css",
+      name: "刷新置顶分支样式",
+      callback: () => this.refreshCss(),
     });
 
-    this.observer = new MutationObserver(() => this.scheduleApply());
-    this.observer.observe(document.body, { childList: true, subtree: true });
-
-    this.registerEvent(this.app.workspace.on("layout-change", () => this.scheduleApply()));
-    this.app.workspace.onLayoutReady(() => this.scheduleApply(true));
+    await this.refreshCss();
   }
 
   onunload() {
-    if (this.observer) this.observer.disconnect();
-    if (this.applyTimer) window.clearTimeout(this.applyTimer);
+    this.styleEl?.remove();
   }
 
-  async saveSettings() {
-    await this.saveData(this.settings);
+  addFolderMenu(menu, file) {
+    if (!isFolder(file)) return;
+
+    const path = normalizePath(file.path);
+    const pinned = this.isPinned(path);
+
+    menu.addSeparator();
+    menu.addItem((item) => {
+      item
+        .setTitle(pinned ? "取消置顶分支" : "置顶分支")
+        .setIcon(pinned ? "pin-off" : "pin")
+        .onClick(async () => {
+          if (pinned) {
+            await this.unpin(path);
+            new Notice(`已取消置顶：${path}`);
+          } else {
+            await this.pin(path);
+            new Notice(`已置顶：${path}`);
+          }
+        });
+    });
   }
 
-  scheduleApply(force = false) {
-    if (!this.settings?.enabled && !force) return;
-    if (this.isApplying) return;
-
-    if (this.applyTimer) window.clearTimeout(this.applyTimer);
-    this.applyTimer = window.setTimeout(() => {
-      this.applyTimer = null;
-      this.applyPinnedFolders();
-    }, force ? 0 : this.settings.refreshDelayMs);
-  }
-
-  applyPinnedFolders() {
-    if (!this.settings?.enabled) return;
-    if (this.isApplying) return;
-
-    const paths = this.getPinnedPaths();
-    if (!paths.length) return;
-
-    this.isApplying = true;
-    try {
-      const leaves = this.app.workspace.getLeavesOfType("file-explorer");
-      for (const leaf of leaves) {
-        const root = leaf?.view?.containerEl;
-        if (!root) continue;
-
-        for (const path of paths) {
-          this.pinBranch(root, path);
-        }
-      }
-    } finally {
-      this.isApplying = false;
-    }
+  isPinned(path) {
+    return this.getPinnedPaths().includes(normalizePath(path));
   }
 
   getPinnedPaths() {
-    const raw = Array.isArray(this.settings?.pinnedPaths) ? this.settings.pinnedPaths : [];
-    const unique = [];
+    const raw = Array.isArray(this.settings?.pinnedPaths)
+      ? this.settings.pinnedPaths
+      : DEFAULT_SETTINGS.pinnedPaths;
     const seen = new Set();
+    const result = [];
 
-    for (const entry of raw) {
-      const value = normalizePath(String(entry || "").trim());
-      if (!value || seen.has(value)) continue;
-      seen.add(value);
-      unique.push(value);
+    for (const item of raw) {
+      const path = normalizePath(String(item || "").trim());
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      result.push(path);
     }
 
-    return unique;
+    return result;
   }
 
-  pinBranch(container, targetPath) {
-    const selector = `.nav-folder-title[data-path="${cssEscape(targetPath)}"]`;
-    const titleEl = container.querySelector(selector);
-    if (!titleEl) return;
+  async pin(path) {
+    this.settings.pinnedPaths = [...this.getPinnedPaths(), normalizePath(path)];
+    await this.saveAndRefresh();
+  }
 
-    const folderEl = titleEl.closest(".nav-folder");
-    const siblings = folderEl?.parentElement;
-    if (!folderEl || !siblings) return;
-    if (siblings.firstElementChild === folderEl) return;
+  async unpin(path) {
+    const target = normalizePath(path);
+    this.settings.pinnedPaths = this.getPinnedPaths().filter((item) => item !== target);
+    await this.saveAndRefresh();
+  }
 
-    folderEl.addClass("pin-folder-top-pinned");
-    siblings.prepend(folderEl);
+  async saveAndRefresh() {
+    await this.saveData({ pinnedPaths: this.getPinnedPaths() });
+    await this.refreshCss();
+  }
+
+  async refreshCss() {
+    const css = buildCss(this.getPinnedPaths());
+    if (this.styleEl) this.styleEl.textContent = css;
+
+    const snippetPath = normalizePath(`${this.app.vault.configDir}/snippets/pin-folder-top.css`);
+    await this.app.vault.adapter.write(snippetPath, css);
   }
 };
 
@@ -109,50 +114,96 @@ class PinFolderTopSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Pin Folder Top" });
+    containerEl.createEl("h2", { text: "置顶分支" });
 
     new Setting(containerEl)
-      .setName("启用")
-      .setDesc("自动把指定分支移动到文件列表最前面。")
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.enabled).onChange(async (value) => {
-          this.plugin.settings.enabled = value;
-          await this.plugin.saveSettings();
-          this.plugin.scheduleApply(true);
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("置顶分支")
-      .setDesc("每行一个路径，从 vault 根目录开始，例如：仓库 或 资料/仓库。")
+      .setName("置顶列表")
+      .setDesc("每行一个文件夹路径。顺序就是左侧文件列表的置顶顺序。")
       .addTextArea((text) => {
-        text.inputEl.rows = 4;
+        text.inputEl.rows = 6;
         text
-          .setPlaceholder("仓库")
-          .setValue((this.plugin.settings.pinnedPaths || []).join("\n"))
+          .setValue(this.plugin.getPinnedPaths().join("\n"))
           .onChange(async (value) => {
             this.plugin.settings.pinnedPaths = value
-              .split(/[\n,]+/)
+              .split(/\n+/)
               .map((item) => item.trim())
               .filter(Boolean);
-            await this.plugin.saveSettings();
-            this.plugin.scheduleApply(true);
+            await this.plugin.saveAndRefresh();
           });
       });
 
     new Setting(containerEl)
-      .setName("立即刷新")
-      .setDesc("保存设置后手动刷新一次。")
+      .setName("刷新样式")
+      .setDesc("如果刚改完没有立刻显示，可以点这里手动刷新。")
       .addButton((button) =>
-        button.setButtonText("刷新").onClick(() => this.plugin.scheduleApply(true))
+        button.setButtonText("刷新").onClick(async () => {
+          await this.plugin.refreshCss();
+          new Notice("置顶样式已刷新");
+        })
       );
   }
 }
 
-function cssEscape(value) {
-  if (globalThis.CSS && typeof CSS.escape === "function") {
-    return CSS.escape(value);
-  }
+function isFolder(file) {
+  return file instanceof TFolder || Array.isArray(file?.children);
+}
 
+function buildCss(paths) {
+  const base = `@charset "UTF-8";
+
+/*
+  Static Obsidian file-explorer pinning.
+  Generated by the Pin Folder Top plugin.
+  No DOM moving, so it should not flicker or make folders jump.
+*/
+
+.workspace-leaf-content[data-type="file-explorer"] .nav-folder-children,
+.workspace-leaf-content[data-type="file-explorer"] .tree-item-children,
+.workspace-leaf-content[data-type="file-explorer"] .nav-files-container > div,
+.nav-files-container .nav-folder-children,
+.nav-files-container .tree-item-children,
+.nav-files-container > div {
+  display: flex !important;
+  flex-direction: column !important;
+}
+`;
+
+  const orderRules = paths
+    .map((path, index) => {
+      const value = cssAttr(path);
+      return `
+.workspace-leaf-content[data-type="file-explorer"] .nav-folder:has(> .nav-folder-title[data-path="${value}"]),
+.nav-files-container .nav-folder:has(> .nav-folder-title[data-path="${value}"]),
+.workspace-leaf-content[data-type="file-explorer"] .tree-item.nav-folder:has(> .tree-item-self[data-path="${value}"]),
+.nav-files-container .tree-item.nav-folder:has(> .tree-item-self[data-path="${value}"]) {
+  order: ${-100000 + index} !important;
+}`;
+    })
+    .join("\n");
+
+  const titleSelectors = paths
+    .map((path) => {
+      const value = cssAttr(path);
+      return `.workspace-leaf-content[data-type="file-explorer"] .nav-folder-title[data-path="${value}"],
+.nav-files-container .nav-folder-title[data-path="${value}"],
+.workspace-leaf-content[data-type="file-explorer"] .tree-item-self[data-path="${value}"],
+.nav-files-container .tree-item-self[data-path="${value}"]`;
+    })
+    .join(",\n");
+
+  const titleRule = titleSelectors
+    ? `
+${titleSelectors} {
+  background: var(--background-primary) !important;
+  border-left: 3px solid var(--interactive-accent) !important;
+  border-radius: 6px !important;
+  box-shadow: inset 0 0 0 1px var(--background-modifier-border) !important;
+}`
+    : "";
+
+  return `${base}${orderRules}${titleRule}\n`;
+}
+
+function cssAttr(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
