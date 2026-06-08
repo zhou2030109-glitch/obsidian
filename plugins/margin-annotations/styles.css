@@ -42,6 +42,7 @@
     linear-gradient(var(--ma-color-soft, transparent), var(--ma-color-soft, transparent)),
     var(--background-secondary);
   color: var(--text-muted);
+  font-family: var(--font-text);
   font-size: var(--ma-note-font-size);
   font-weight: 500;
   line-height: 1.45;

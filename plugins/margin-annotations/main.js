@@ -41,6 +41,8 @@ module.exports = class MarginAnnotationsPlugin extends Plugin {
   async onload() {
     this.data = normalizeData(await this.loadData());
     this.revision = 0;
+    this.readingResizeObserver = new ResizeObserver(() => this.scheduleReadingLayout());
+    this.editorResizeObserver = new ResizeObserver(() => this.scheduleEditorLayout());
     this.applySettings();
     this.addSettingTab(new MarginAnnotationsSettingTab(this.app, this));
 
@@ -104,6 +106,17 @@ module.exports = class MarginAnnotationsPlugin extends Plugin {
 
     this.registerEditorExtension(createEditorAnnotationExtension(this));
 
+    this.registerDomEvent(window, "resize", () => {
+      this.scheduleReadingLayout();
+      this.scheduleEditorLayout();
+    });
+    this.registerEvent(
+      this.app.workspace.on("resize", () => {
+        this.scheduleReadingLayout();
+        this.scheduleEditorLayout();
+      })
+    );
+
     this.app.workspace.onLayoutReady(() => {
       if (!this.data.settings.autoMigrateLegacy) return;
       this.migrateLegacyAnnotations(false).catch((error) => {
@@ -115,6 +128,10 @@ module.exports = class MarginAnnotationsPlugin extends Plugin {
   onunload() {
     this.closeComposer();
     this.clearSettings();
+    this.readingResizeObserver?.disconnect();
+    this.editorResizeObserver?.disconnect();
+    if (this._readingLayoutRaf) window.cancelAnimationFrame(this._readingLayoutRaf);
+    if (this._editorLayoutRaf) window.cancelAnimationFrame(this._editorLayoutRaf);
   }
 
   openAnnotationComposer(editor, side, capturedSelection, capturedFrom, capturedTo) {
@@ -340,7 +357,8 @@ module.exports = class MarginAnnotationsPlugin extends Plugin {
 
   renderAnnotations(el, ctx) {
     if (!this.data.settings.showReadingAnnotations) return;
-    if (el.closest("pre, code")) return;
+
+    convertLiteralAnchorsInCodeBlocks(el);
 
     const legacyById = this.getLegacyAnnotationsForSection(el, ctx);
     const anchors = Array.from(el.querySelectorAll(".ma-anchor[data-ma-id]"));
@@ -391,6 +409,10 @@ module.exports = class MarginAnnotationsPlugin extends Plugin {
   attachMarginNote(target, annotation, ctx, anchor) {
     if (!target || !annotation.note.trim()) return;
 
+    if (target.tagName === "PRE") {
+      target = wrapCodeBlock(target);
+    }
+
     target.classList.add("ma-reading-container");
     const side = normalizeSide(annotation.side);
     const columnClass = side === "left" ? "ma-col-left" : "ma-col-right";
@@ -433,6 +455,34 @@ module.exports = class MarginAnnotationsPlugin extends Plugin {
 
     MarkdownRenderer.render(this.app, annotation.note.trim(), contentEl, ctx.sourcePath, this);
     column.appendChild(noteEl);
+
+    noteEl._maAnchor = anchor || null;
+    this.readingResizeObserver?.observe(noteEl);
+    this.scheduleReadingLayout();
+  }
+
+  scheduleReadingLayout() {
+    if (this._readingLayoutRaf) return;
+    this._readingLayoutRaf = window.requestAnimationFrame(() => {
+      this._readingLayoutRaf = 0;
+      for (const preview of document.querySelectorAll(".markdown-preview-view")) {
+        if (preview.querySelector(".ma-positioned-note")) {
+          layoutReadingNotes(preview);
+        }
+      }
+    });
+  }
+
+  scheduleEditorLayout() {
+    if (this._editorLayoutRaf) return;
+    this._editorLayoutRaf = window.requestAnimationFrame(() => {
+      this._editorLayoutRaf = 0;
+      for (const editor of document.querySelectorAll(".markdown-source-view.mod-cm6")) {
+        if (editor.querySelector(".ma-editor-margin-note")) {
+          layoutEditorNotes(editor);
+        }
+      }
+    });
   }
 
   showAnnotationMenu(event, annotation) {
@@ -935,6 +985,9 @@ class EditorMarginNoteWidget extends WidgetType {
       this.plugin.showAnnotationMenu(event, this.annotation);
     });
 
+    this.plugin.editorResizeObserver?.observe(noteEl);
+    this.plugin.scheduleEditorLayout();
+
     return noteEl;
   }
 
@@ -948,6 +1001,7 @@ function createEditorAnnotationExtension(plugin) {
     constructor(view) {
       this.seenRevision = plugin.revision;
       this.decorations = this.buildDecorations(view);
+      plugin.scheduleEditorLayout();
     }
 
     update(update) {
@@ -959,6 +1013,9 @@ function createEditorAnnotationExtension(plugin) {
       ) {
         this.seenRevision = plugin.revision;
         this.decorations = this.buildDecorations(update.view);
+      }
+      if (update.docChanged || update.viewportChanged || update.geometryChanged) {
+        plugin.scheduleEditorLayout();
       }
     }
 
@@ -1371,13 +1428,175 @@ function insertTextAtTextarea(textarea, text) {
 }
 
 function getAnchorContainer(anchor) {
-  return anchor.closest("p, li, blockquote, h1, h2, h3, h4, h5, h6") || anchor.parentElement;
+  return (
+    anchor.closest("p, li, blockquote, pre, h1, h2, h3, h4, h5, h6") ||
+    anchor.parentElement
+  );
+}
+
+const LITERAL_ANCHOR_REGEX =
+  /(?:==([^\n=]*?)==)?<span class="ma-anchor" data-ma-id="([a-zA-Z0-9_-]+)"><\/span>/g;
+
+function convertLiteralAnchorsInCodeBlocks(el) {
+  const codeEls = el.tagName === "CODE" ? [el] : Array.from(el.querySelectorAll("code"));
+
+  for (const codeEl of codeEls) {
+    const raw = codeEl.textContent;
+    if (raw.indexOf('class="ma-anchor"') === -1) continue;
+
+    LITERAL_ANCHOR_REGEX.lastIndex = 0;
+    if (!LITERAL_ANCHOR_REGEX.test(raw)) continue;
+
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    let match;
+    LITERAL_ANCHOR_REGEX.lastIndex = 0;
+
+    while ((match = LITERAL_ANCHOR_REGEX.exec(raw)) !== null) {
+      if (match.index > lastIndex) {
+        fragment.appendChild(document.createTextNode(raw.slice(lastIndex, match.index)));
+      }
+      if (match[1]) {
+        fragment.appendChild(document.createTextNode(match[1]));
+      }
+      const anchor = document.createElement("span");
+      anchor.className = "ma-anchor";
+      anchor.dataset.maId = match[2];
+      fragment.appendChild(anchor);
+      lastIndex = match.index + match[0].length;
+    }
+    LITERAL_ANCHOR_REGEX.lastIndex = 0;
+
+    if (lastIndex < raw.length) {
+      fragment.appendChild(document.createTextNode(raw.slice(lastIndex)));
+    }
+
+    codeEl.textContent = "";
+    codeEl.appendChild(fragment);
+  }
+}
+
+function wrapCodeBlock(pre) {
+  const parent = pre.parentElement;
+  if (parent && parent.classList.contains("ma-code-host")) {
+    return parent;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "ma-code-host";
+  pre.parentNode.insertBefore(wrapper, pre);
+  wrapper.appendChild(pre);
+  return wrapper;
 }
 
 function getAnchorOffset(container, anchor) {
   const containerRect = container.getBoundingClientRect();
   const anchorRect = anchor.getBoundingClientRect();
   return Math.max(0, Math.round(anchorRect.top - containerRect.top));
+}
+
+const NOTE_STACK_GAP = 10;
+const NOTE_EDGE_PAD = 8;
+
+function clampHorizontalShift(left, width, clampLeft, clampRight) {
+  let shift = 0;
+  if (left + width > clampRight - NOTE_EDGE_PAD) {
+    shift = clampRight - NOTE_EDGE_PAD - (left + width);
+  }
+  if (left + shift < clampLeft + NOTE_EDGE_PAD) {
+    shift = clampLeft + NOTE_EDGE_PAD - left;
+  }
+  return shift;
+}
+
+function layoutReadingNotes(preview) {
+  const previewRect = preview.getBoundingClientRect();
+  const clampLeft = previewRect.left;
+  const clampRight = previewRect.left + preview.clientWidth;
+
+  for (const side of ["left", "right"]) {
+    const notes = Array.from(
+      preview.querySelectorAll(`.ma-margin-note-${side}.ma-positioned-note`)
+    );
+    const entries = [];
+
+    for (const note of notes) {
+      const column = note.parentElement;
+      if (!column) continue;
+      const colRect = column.getBoundingClientRect();
+      const anchor = note._maAnchor;
+      const anchorTop = anchor ? anchor.getBoundingClientRect().top : colRect.top;
+      entries.push({
+        note,
+        colLeft: colRect.left,
+        colTop: colRect.top,
+        anchorTop,
+        height: note.offsetHeight,
+        width: note.offsetWidth,
+      });
+    }
+
+    entries.sort((a, b) => a.anchorTop - b.anchorTop);
+
+    let prevBottom = -Infinity;
+    for (const entry of entries) {
+      const top = Math.max(entry.anchorTop, prevBottom + NOTE_STACK_GAP);
+      const shift = clampHorizontalShift(entry.colLeft, entry.width, clampLeft, clampRight);
+      entry.note.style.top = `${Math.round(top - entry.colTop)}px`;
+      entry.note.style.left = `${Math.round(shift)}px`;
+      prevBottom = top + entry.height;
+    }
+  }
+}
+
+function layoutEditorNotes(editorRoot) {
+  const scroller = editorRoot.querySelector(".cm-scroller") || editorRoot;
+  const scrollerRect = scroller.getBoundingClientRect();
+  const clampLeft = scrollerRect.left;
+  const clampRight = scrollerRect.left + scroller.clientWidth;
+
+  for (const side of ["left", "right"]) {
+    const notes = Array.from(
+      editorRoot.querySelectorAll(`.ma-editor-margin-note-${side}`)
+    );
+    if (notes.length === 0) continue;
+
+    for (const note of notes) {
+      note.style.top = "";
+      note.style.left = "";
+      note.style.right = "";
+    }
+
+    const entries = [];
+    for (const note of notes) {
+      const line = note.offsetParent;
+      if (!line) continue;
+      const rect = note.getBoundingClientRect();
+      if (rect.height === 0) continue;
+      const lineRect = line.getBoundingClientRect();
+      entries.push({
+        note,
+        lineTop: lineRect.top,
+        lineLeft: lineRect.left,
+        naturalLeft: rect.left,
+        naturalTop: rect.top,
+        height: rect.height,
+        width: rect.width,
+      });
+    }
+
+    entries.sort((a, b) => a.naturalTop - b.naturalTop);
+
+    let prevBottom = -Infinity;
+    for (const entry of entries) {
+      const top = Math.max(entry.naturalTop, prevBottom + NOTE_STACK_GAP);
+      const shift = clampHorizontalShift(entry.naturalLeft, entry.width, clampLeft, clampRight);
+      entry.note.style.top = `${Math.round(top - entry.lineTop)}px`;
+      entry.note.style.right = "auto";
+      entry.note.style.left = `${Math.round(entry.naturalLeft + shift - entry.lineLeft)}px`;
+      prevBottom = top + entry.height;
+    }
+  }
 }
 
 function escapeRegExp(value) {
