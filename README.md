@@ -27,6 +27,7 @@
 | [Zone Scroll Zoom](notes/Zone%20Scroll%20Zoom.md) | 局部滚动缩放插件的使用心得。 |
 | [隐藏复制粘贴的图片等附件](notes/%E9%9A%90%E8%97%8F%E5%A4%8D%E5%88%B6%E7%B2%98%E8%B4%B4%E7%9A%84%E5%9B%BE%E7%89%87%E7%AD%89%E9%99%84%E4%BB%B6.md) | 让文件树不显示自动收集的附件文件的配置方案。 |
 | [置顶分支](notes/%E7%BD%AE%E9%A1%B6%E5%88%86%E6%94%AF.md) | Pin Folder Top 的初版使用记录。 |
+| [Smart Note Agent 与网页浏览器配置](notes/Smart%20Note%20Agent%20%E4%B8%8E%E7%BD%91%E9%A1%B5%E6%B5%8F%E8%A7%88%E5%99%A8%E9%85%8D%E7%BD%AE.md) | Smart Note Agent（DeepSeek）与内置网页浏览器（Web viewer）的配置步骤。 |
 
 ## 目录约定
 

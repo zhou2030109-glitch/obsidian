@@ -235,6 +235,7 @@ class FileShiftPinPlugin extends obsidian.Plugin {
     this.ribbonEl.addClass('fsp-active');
 
     this.patchSort(explorer);
+    this.patchSortItems(explorer);
     this.setupDragHandlers();
     this.applyAllOrders();
     this.refreshPinClasses();
@@ -275,6 +276,7 @@ class FileShiftPinPlugin extends obsidian.Plugin {
       this.refreshTimer = null;
     }
     this.unpatchSort();
+    this.unpatchSortItems();
     this.clearDraggable();
     this.clearIndicators();
   }
@@ -358,6 +360,73 @@ class FileShiftPinPlugin extends obsidian.Plugin {
     if (explorer && explorer.sort) {
       explorer.sort();
     }
+  }
+
+  // Bake pin + custom order into Obsidian's native sort, so the very first
+  // render already comes out ordered — no "default then fix" flash.
+  patchSortItems(explorer) {
+    const proto = explorer && Object.getPrototypeOf(explorer);
+    if (!proto || typeof proto.getSortedFolderItems !== 'function') return false;
+    if (proto._fspGetSortedPatched) return true;
+
+    const self = this;
+    const orig = proto.getSortedFolderItems;
+    proto._fspOrigGetSorted = orig;
+    proto.getSortedFolderItems = function (folder) {
+      const items = orig.call(this, folder);
+      try {
+        return self.applyOrderToItems(folder, items);
+      } catch (e) {
+        return items;
+      }
+    };
+    proto._fspGetSortedPatched = true;
+    return true;
+  }
+
+  unpatchSortItems() {
+    const explorer = this.getExplorer();
+    const proto = explorer && Object.getPrototypeOf(explorer);
+    if (proto && proto._fspGetSortedPatched && proto._fspOrigGetSorted) {
+      proto.getSortedFolderItems = proto._fspOrigGetSorted;
+      delete proto._fspOrigGetSorted;
+      delete proto._fspGetSortedPatched;
+    }
+  }
+
+  applyOrderToItems(folder, items) {
+    if (!this.isActive) return items;
+    if (!Array.isArray(items) || items.length < 2) return items;
+
+    const root = (this.app.vault.getRoot && this.app.vault.getRoot()) || this.app.vault.root;
+    const isRoot = folder === root || folder?.path === '/' || folder?.path === '' || !folder?.path;
+    const parentPath = isRoot ? '/' : folder.path;
+
+    let order;
+    if (isRoot) {
+      const pinned = this.data.pinned || [];
+      const rest = (this.data.order['/'] || []).filter(n => !pinned.includes(n));
+      order = [...pinned, ...rest];
+    } else {
+      order = this.data.order[parentPath] || [];
+    }
+    if (!order.length) return items;
+
+    const rank = new Map();
+    order.forEach((name, i) => rank.set(name, i));
+
+    let anyKnown = false;
+    const decorated = items.map((item, i) => {
+      const p = item && item.file ? item.file.path : null;
+      const name = p != null ? this.getFileName(p) : null;
+      const r = (name != null && rank.has(name)) ? rank.get(name) : Infinity;
+      if (r !== Infinity) anyKnown = true;
+      return { item, r, i };
+    });
+    if (!anyKnown) return items;
+
+    decorated.sort((a, b) => (a.r - b.r) || (a.i - b.i));
+    return decorated.map(d => d.item);
   }
 
   // ─── Drag & Drop ──────────────────────────────────────────────
